@@ -17,8 +17,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     
     if ($user && $password=$user['password']) {
         $_SESSION['user'] = $user;
+        $_SESSION['role'] = $user['role'];
         $_SESSION['message'] = "Connexion réussie!";
-        redirect('dashboard.php');
+          $role = $_SESSION['role'] ?? '';
+
+    if ($role === 'etudiant') {
+        redirect('/etudiant.php');
+    } elseif ($role === 'admin') {
+        redirect('/dashboard.php');
+    } 
     } else {
         $error = "Email ou mot de passe incorrect";
         

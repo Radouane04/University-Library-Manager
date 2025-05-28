@@ -123,7 +123,7 @@
 
     <div class="sidebar" id="mySidebar">
         <div class="side-header">
-            <i class="fas fa-book-open" style="font-size: 60px; color: #f39c12;"></i>
+            <i class="fas fa-book-open" style="font-size: 60px; color:rgb(255, 255, 255);"></i>
             <h5>Bibliothèque Universitaire</h5>
         </div>
         <hr style="border:1px solid; background-color:#8a7b6d; border-color:#3B3131;">
