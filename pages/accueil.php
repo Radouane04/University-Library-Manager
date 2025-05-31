@@ -22,7 +22,7 @@ include '../includes/header.php';
 
 <div class="row">
     <div class="col-md-3 mb-4">
-        <div class="stat-card bg-primary">
+        <div class="stat-card bg-info">
             <h3>Livres</h3>
             <p><?= $stats['total_livres'] ?></p>
             <a href="livres.php" class="text-white">Voir détails <i class="fas fa-arrow-right"></i></a>

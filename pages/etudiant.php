@@ -1,20 +1,147 @@
 <?php
 require_once '../config/database.php';
- // Utilise votre fichier de configuration existant
 
-// Traitement des paramètres de recherche
+// Authentication check
+$isLoggedIn = isset($_SESSION['user']);
+$username = $isLoggedIn ? $_SESSION['user']['nom'] : '';
+
+// Search parameters
 $search = $_GET['search'] ?? '';
 $category = $_GET['category'] ?? '';
-$availability = isset($_GET['availability']) ? (int)$_GET['availability'] : null;
+$availability = $_GET['availability'] ?? '';
 $sort = $_GET['sort'] ?? 'titre';
 
-// Options de tri
+// Secure sort options
 $sortOptions = [
     'titre' => 'titre ASC',
     'auteur' => 'auteur ASC',
     'recent' => 'created_at DESC'
 ];
 $sortOrder = $sortOptions[$sort] ?? $sortOptions['titre'];
+
+// Build SQL query
+$sql = "SELECT * FROM livres WHERE 1=1";
+$params = [];
+
+// Search handling - uniquement par titre maintenant
+if (!empty($search)) {
+    $searchTerms = array_filter(array_map('trim', explode(' ', $search)));
+    $searchConditions = [];
+    foreach ($searchTerms as $i => $term) {
+        if (!empty($term)) {
+            $param = ":search$i";
+            $searchConditions[] = "titre LIKE $param";
+            $params[$param] = "%$term%";
+        }
+    }
+    if (!empty($searchConditions)) {
+        $sql .= " AND (" . implode(' AND ', $searchConditions) . ")";
+    }
+}
+
+if (!empty($category)) {
+    $sql .= " AND categorie = :category";
+    $params[':category'] = $category;
+}
+
+if ($availability !== '') {
+    $sql .= " AND disponible = :disponible";
+    $params[':disponible'] = (int)$availability;
+}
+
+$sql .= " ORDER BY " . $sortOrder;
+
+// Traitement de la réservation
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['reserver'])) {
+    header('Content-Type: application/json');
+    
+    // Vérifier si l'utilisateur est connecté
+    if (!isset($_SESSION['user'])) {
+        echo json_encode([
+            'success' => false,
+            'message' => 'Vous devez être connecté pour réserver un livre'
+        ]);
+        exit;
+    }
+
+    $bookId = (int)$_POST['book_id'];
+    $userId = (int)$_SESSION['user']['id'];
+
+    try {
+        $pdo->beginTransaction();
+
+        // Vérifier que le livre existe et est disponible
+        $stmt = $pdo->prepare("SELECT id, titre FROM livres WHERE id = ? AND disponible = 1 FOR UPDATE");
+        $stmt->execute([$bookId]);
+        $book = $stmt->fetch();
+        
+        if (!$book) {
+            $pdo->rollBack();
+            echo json_encode([
+                'success' => false,
+                'message' => 'Le livre n\'existe pas ou n\'est pas disponible'
+            ]);
+            exit;
+        }
+
+        // Vérifier si l'utilisateur n'a pas déjà réservé ce livre
+        $stmt = $pdo->prepare("SELECT id FROM reservations WHERE livre_id = ? AND etudiant_id = ? AND statut IN ('en_attente', 'active')");
+        $stmt->execute([$bookId, $userId]);
+        
+        if ($stmt->rowCount() > 0) {
+            $pdo->rollBack();
+            echo json_encode([
+                'success' => false,
+                'message' => 'Vous avez déjà une réservation en cours pour ce livre'
+            ]);
+            exit;
+        }
+
+        // Vérifier le nombre maximal de réservations actives (3 max)
+        $stmt = $pdo->prepare("SELECT COUNT(*) FROM reservations WHERE etudiant_id = ? AND statut = 'active'");
+        $stmt->execute([$userId]);
+        $activeReservations = (int)$stmt->fetchColumn();
+        
+        if ($activeReservations >= 3) {
+            $pdo->rollBack();
+            echo json_encode([
+                'success' => false,
+                'message' => 'Vous avez déjà 3 réservations actives. Maximum autorisé atteint.'
+            ]);
+            exit;
+        }
+
+        // Mettre à jour la disponibilité du livre
+        $stmt = $pdo->prepare("UPDATE livres SET disponible = 0 WHERE id = ?");
+        $stmt->execute([$bookId]);
+
+        // Créer la réservation
+        $dateReservation = date('Y-m-d H:i:s');
+        $dateRetour = date('Y-m-d H:i:s', strtotime('+14 days'));
+
+        $stmt = $pdo->prepare("INSERT INTO reservations (livre_id, etudiant_id, date_reservation, date_retour_prevue, statut) VALUES (?, ?, ?, ?, 'active')");
+        $stmt->execute([$bookId, $userId, $dateReservation, $dateRetour]);
+
+        $pdo->commit();
+
+        echo json_encode([
+            'success' => true,
+            'message' => 'Réservation effectuée avec succès! Le livre "'.$book['titre'].'" a été réservé.',
+            'return_date' => date('d/m/Y', strtotime($dateRetour))
+        ]);
+        exit;
+
+    } catch (PDOException $e) {
+        if (isset($pdo) && $pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        echo json_encode([
+            'success' => false,
+            'message' => 'Une erreur technique est survenue: ' . $e->getMessage()
+        ]);
+        exit;
+    }
+}
 ?>
 
 <!DOCTYPE html>
@@ -23,6 +150,7 @@ $sortOrder = $sortOptions[$sort] ?? $sortOptions['titre'];
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Catalogue - Bibliothèque Universitaire</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <style>
         :root {
             --primary-color: #3498db;
@@ -30,36 +158,34 @@ $sortOrder = $sortOptions[$sort] ?? $sortOptions['titre'];
             --accent-color: #e74c3c;
             --light-color: #ecf0f1;
             --dark-color: #1a252f;
-            --gray-color: #95a5a6;
         }
-        
+
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
         }
-        
+
         body {
-            font-family: 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', sans-serif;
+            font-family: 'Segoe UI', sans-serif;
             line-height: 1.6;
             color: var(--dark-color);
             background-color: #f9f9f9;
+            min-height: 100vh;
             display: flex;
             flex-direction: column;
-            min-height: 100vh;
         }
-        
-        /* Header Styles */
+
         header {
             background-color: var(--secondary-color);
             color: white;
             padding: 1rem 0;
-            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
             position: sticky;
             top: 0;
             z-index: 100;
         }
-        
+
         .header-container {
             display: flex;
             justify-content: space-between;
@@ -68,33 +194,42 @@ $sortOrder = $sortOptions[$sort] ?? $sortOptions['titre'];
             margin: 0 auto;
             padding: 0 2rem;
         }
-        
+
         .logo {
             display: flex;
             align-items: center;
             gap: 1rem;
         }
-        
-        .logo img {
-            height: 50px;
+
+        .logo i {
+            font-size: 2.5rem;
+            color: white;
         }
-        
+
         .logo-text {
             font-size: 1.5rem;
             font-weight: 700;
         }
-        
+
         .logo-text span {
             color: var(--primary-color);
         }
-        
-        nav ul {
+
+        nav {
+            display: flex;
+            align-items: center;
+            gap: 2rem;
+            width: 100%;
+        }
+
+        .nav-links {
             display: flex;
             list-style: none;
-            gap: 2rem;
+            gap: 1.5rem;
+            margin-right: auto;
         }
-        
-        nav a {
+
+        .nav-links a {
             color: white;
             text-decoration: none;
             font-weight: 500;
@@ -102,12 +237,12 @@ $sortOrder = $sortOptions[$sort] ?? $sortOptions['titre'];
             position: relative;
             transition: color 0.3s;
         }
-        
-        nav a:hover {
+
+        .nav-links a:hover {
             color: var(--primary-color);
         }
-        
-        nav a::after {
+
+        .nav-links a::after {
             content: '';
             position: absolute;
             bottom: 0;
@@ -117,17 +252,63 @@ $sortOrder = $sortOptions[$sort] ?? $sortOptions['titre'];
             background-color: var(--primary-color);
             transition: width 0.3s;
         }
-        
-        nav a:hover::after {
+
+        .nav-links a:hover::after {
             width: 100%;
         }
-        
-        /* Main Content */
+
+        .user-section {
+            display: flex;
+            align-items: center;
+            gap: 1.5rem;
+            margin-left: auto;
+        }
+
+        .user-greeting {
+            color: white;
+            font-weight: 500;
+            white-space: nowrap;
+            order: 1;
+        }
+
+        .logout-btn, .login-btn {
+            padding: 0.5rem 1rem;
+            border-radius: 4px;
+            text-decoration: none;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            transition: all 0.3s;
+            order: 2;
+        }
+
+        .logout-btn {
+            background-color: var(--accent-color);
+            color: white;
+            border: 1px solid var(--accent-color);
+        }
+
+        .logout-btn:hover {
+            background-color: #c0392b;
+            border-color: #c0392b;
+        }
+
+        .login-btn {
+            background-color: var(--primary-color);
+            color: white;
+            border: 1px solid var(--primary-color);
+        }
+
+        .login-btn:hover {
+            background-color: #2980b9;
+            border-color: #2980b9;
+        }
+
         main {
             flex: 1;
             padding: 2rem 0;
         }
-        
+
         .hero {
             background: linear-gradient(135deg, var(--secondary-color), var(--primary-color));
             color: white;
@@ -135,24 +316,28 @@ $sortOrder = $sortOptions[$sort] ?? $sortOptions['titre'];
             text-align: center;
             margin-bottom: 2rem;
         }
-        
+
         .hero h1 {
             font-size: 2.5rem;
             margin-bottom: 1rem;
         }
-        
+
+        #catalogue {
+            scroll-margin-top: 80px;
+        }
+
         .search-container {
             max-width: 1200px;
             margin: 0 auto 2rem;
             padding: 0 2rem;
         }
-        
+
         .search-form {
             display: flex;
             gap: 1rem;
             margin-bottom: 1.5rem;
         }
-        
+
         .search-form input {
             flex: 1;
             padding: 0.8rem 1rem;
@@ -160,7 +345,7 @@ $sortOrder = $sortOptions[$sort] ?? $sortOptions['titre'];
             border-radius: 4px;
             font-size: 1rem;
         }
-        
+
         .search-form button {
             background-color: var(--primary-color);
             color: white;
@@ -170,28 +355,28 @@ $sortOrder = $sortOptions[$sort] ?? $sortOptions['titre'];
             cursor: pointer;
             transition: background-color 0.3s;
         }
-        
+
         .search-form button:hover {
             background-color: #2980b9;
         }
-        
+
         .filters {
             display: flex;
             flex-wrap: wrap;
             gap: 1rem;
         }
-        
+
         .filter-group {
             flex: 1;
             min-width: 200px;
         }
-        
+
         .filter-group label {
             display: block;
             margin-bottom: 0.5rem;
             font-weight: 600;
         }
-        
+
         .filter-group select {
             width: 100%;
             padding: 0.5rem;
@@ -199,20 +384,20 @@ $sortOrder = $sortOptions[$sort] ?? $sortOptions['titre'];
             border-radius: 4px;
             background-color: white;
         }
-        
+
         .container {
             max-width: 1200px;
             margin: 0 auto;
             padding: 0 2rem;
         }
-        
+
         .catalogue {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
             gap: 2rem;
             margin-bottom: 3rem;
         }
-        
+
         .book-card {
             background-color: white;
             border-radius: 8px;
@@ -222,12 +407,12 @@ $sortOrder = $sortOptions[$sort] ?? $sortOptions['titre'];
             display: flex;
             flex-direction: column;
         }
-        
+
         .book-card:hover {
             transform: translateY(-5px);
             box-shadow: 0 10px 20px rgba(0, 0, 0, 0.1);
         }
-        
+
         .book-cover {
             height: 200px;
             background-color: #f0f0f0;
@@ -235,39 +420,53 @@ $sortOrder = $sortOptions[$sort] ?? $sortOptions['titre'];
             align-items: center;
             justify-content: center;
             padding: 1rem;
+            color: #999;
+            flex-direction: column;
         }
-        
+
         .book-cover img {
             max-height: 100%;
             max-width: 100%;
             object-fit: contain;
         }
-        
+
+        .book-cover .placeholder-icon {
+            font-size: 3rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .book-cover .placeholder-text {
+            text-align: center;
+            font-size: 0.8rem;
+            padding: 0 0.5rem;
+            word-break: break-word;
+        }
+
         .book-info {
             padding: 1.5rem;
             flex: 1;
             display: flex;
             flex-direction: column;
         }
-        
+
         .book-title {
             font-size: 1.2rem;
             margin-bottom: 0.5rem;
             color: var(--secondary-color);
         }
-        
+
         .book-author {
-            color: var(--gray-color);
+            color: #95a5a6;
             margin-bottom: 0.5rem;
             font-size: 0.9rem;
         }
-        
+
         .book-isbn {
             font-size: 0.8rem;
             color: #777;
             margin-bottom: 1rem;
         }
-        
+
         .book-category {
             display: inline-block;
             background-color: #e0e0e0;
@@ -276,7 +475,7 @@ $sortOrder = $sortOptions[$sort] ?? $sortOptions['titre'];
             font-size: 0.8rem;
             margin-bottom: 1rem;
         }
-        
+
         .book-location {
             margin-top: auto;
             font-size: 0.9rem;
@@ -285,11 +484,11 @@ $sortOrder = $sortOptions[$sort] ?? $sortOptions['titre'];
             align-items: center;
             gap: 0.5rem;
         }
-        
+
         .book-location i {
             color: var(--primary-color);
         }
-        
+
         .book-availability {
             display: flex;
             justify-content: space-between;
@@ -298,17 +497,17 @@ $sortOrder = $sortOptions[$sort] ?? $sortOptions['titre'];
             padding-top: 1rem;
             border-top: 1px solid #eee;
         }
-        
+
         .available {
             color: #27ae60;
             font-weight: 600;
         }
-        
+
         .unavailable {
             color: var(--accent-color);
             font-weight: 600;
         }
-        
+
         .reserve-btn {
             background-color: var(--primary-color);
             color: white;
@@ -319,37 +518,40 @@ $sortOrder = $sortOptions[$sort] ?? $sortOptions['titre'];
             transition: background-color 0.3s;
             font-size: 0.9rem;
         }
-        
+
         .reserve-btn:hover {
             background-color: #2980b9;
         }
-        
+
         .reserve-btn:disabled {
-            background-color: var(--gray-color);
+            background-color: #95a5a6;
             cursor: not-allowed;
         }
-        
+
         .no-results {
             grid-column: 1/-1;
             text-align: center;
             padding: 2rem;
-            color: var(--gray-color);
+            color: #95a5a6;
         }
-        
+
         .error {
             grid-column: 1/-1;
             text-align: center;
             padding: 2rem;
             color: var(--accent-color);
         }
-        
-        /* Footer Styles */
+
         footer {
             background-color: var(--dark-color);
             color: var(--light-color);
             padding: 3rem 0 0;
         }
-        
+
+        #contact {
+            scroll-margin-top: 80px;
+        }
+
         .footer-content {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
@@ -358,87 +560,163 @@ $sortOrder = $sortOptions[$sort] ?? $sortOptions['titre'];
             margin: 0 auto;
             padding: 0 2rem;
         }
-        
+
         .footer-section {
             margin-bottom: 2rem;
         }
-        
+
         .footer-title {
             font-size: 1.5rem;
             margin-bottom: 1rem;
             color: #fff;
         }
-        
+
         .footer-links {
             list-style: none;
             padding: 0;
         }
-        
+
         .footer-links li {
             margin-bottom: 0.5rem;
         }
-        
+
         .footer-links a {
-            color: var(--gray-color);
+            color: #95a5a6;
             text-decoration: none;
             transition: color 0.3s;
         }
-        
+
         .footer-links a:hover {
             color: var(--primary-color);
         }
-        
+
+        .contact-info {
+            margin-top: 1rem;
+        }
+
+        .contact-info p {
+            margin-bottom: 0.5rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .social-links {
+            display: flex;
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+
+        .social-icon {
+            color: white;
+            background-color: var(--primary-color);
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background-color 0.3s;
+        }
+
+        .social-icon:hover {
+            background-color: var(--secondary-color);
+        }
+
         .footer-bottom {
             background-color: #1a252f;
             padding: 1.5rem 2rem;
             text-align: center;
         }
-        
+
         .footer-bottom p {
             margin-bottom: 0.5rem;
         }
-        
-        /* Responsive Design */
+
         @media (max-width: 768px) {
             .header-container {
                 flex-direction: column;
                 gap: 1rem;
+                padding: 1rem;
             }
-            
-            nav ul {
+
+            nav {
+                width: 100%;
                 flex-direction: column;
                 gap: 1rem;
-                text-align: center;
             }
-            
+
+            .nav-links {
+                flex-direction: column;
+                align-items: center;
+                gap: 1rem;
+                margin-right: 0;
+            }
+
+            .user-section {
+                margin: 1rem 0 0;
+                justify-content: center;
+                width: 100%;
+                flex-direction: column-reverse;
+                gap: 1rem;
+            }
+
             .search-form {
                 flex-direction: column;
             }
-            
+
             .filter-group {
                 min-width: 100%;
             }
+
+            .user-greeting {
+                display: none;
+            }
+            
+            .logout-btn span, .login-btn span {
+                display: none;
+            }
+            
+            .logout-btn, .login-btn {
+                padding: 0.5rem;
+                border-radius: 50%;
+                width: 40px;
+                height: 40px;
+                justify-content: center;
+            }
         }
     </style>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
 </head>
 <body>
     <header>
         <div class="header-container">
             <div class="logo">
-                <!-- <i class="fas fa-book-open"></i> -->
-            <i class="fas fa-book-open" style="font-size: 60px; color:rgb(255, 255, 255);"></i>
-
+                <i class="fas fa-book-open"></i>
                 <div class="logo-text">Bibliothèque <span>Universitaire</span></div>
             </div>
+            
             <nav>
-                <ul>
-                    <li><a href="#">Accueil</a></li>
-                    <li><a href="#" class="active">Catalogue</a></li>
-                    <li><a href="#">Services</a></li>
-                    <li><a href="reservations.php">Réservations</a></li>
-                    <li><a href="#">Contact</a></li>
+                <ul class="nav-links">
+                    <li><a href="#" onclick="return scrollToTop()">Accueil</a></li>
+                    <li><a href="#catalogue">Catalogue</a></li>
+                    <li><a href="#contact">Contact</a></li>
+                    <?php if ($isLoggedIn): ?>
+                        <li><a href="reservations.php">Réservations</a></li>
+                    <?php endif; ?>
                 </ul>
+                
+                <div class="user-section">
+                    <?php if ($isLoggedIn): ?>
+                        <a href="logout.php" class="logout-btn">
+                            <i class="fas fa-sign-out-alt"></i> <span>Déconnexion</span>
+                        </a>
+                        <span class="user-greeting">Bonjour, <?= htmlspecialchars($username) ?></span>
+                    <?php else: ?>
+                        <a href="login.php" class="login-btn">
+                            <i class="fas fa-sign-in-alt"></i> <span>Connexion</span>
+                        </a>
+                    <?php endif; ?>
+                </div>
             </nav>
         </div>
     </header>
@@ -449,86 +727,70 @@ $sortOrder = $sortOptions[$sort] ?? $sortOptions['titre'];
             <p>Recherchez et réservez les livres disponibles dans notre bibliothèque</p>
         </section>
 
-        <div class="search-container">
-            <form class="search-form" method="GET" action="">
-                <input type="text" name="search" placeholder="Rechercher par titre, auteur, ISBN..." 
-                       value="<?= htmlspecialchars($search) ?>">
-                <button type="submit"><i class="fas fa-search"></i> Rechercher</button>
+        <div id="catalogue" class="search-container">
+            <form method="GET" action="" style="display: contents">
+                <div class="search-form">
+                    <input type="text" name="search" placeholder="Rechercher par titre..." 
+                           value="<?= htmlspecialchars($search) ?>">
+                    <button type="submit"><i class="fas fa-search"></i> Rechercher</button>
+                </div>
+                
+                <div class="filters">
+                    <div class="filter-group">
+                        <label for="category">Catégorie</label>
+                        <select id="category" name="category" onchange="this.form.submit()">
+                            <option value="">Toutes catégories</option>
+                            <?php
+                            $categories = $pdo->query("SELECT DISTINCT categorie FROM livres ORDER BY categorie");
+                            while ($cat = $categories->fetch()):
+                            ?>
+                            <option value="<?= htmlspecialchars($cat['categorie']) ?>" 
+                                <?= $category === $cat['categorie'] ? 'selected' : '' ?>>
+                                <?= htmlspecialchars($cat['categorie']) ?>
+                            </option>
+                            <?php endwhile; ?>
+                        </select>
+                    </div>
+                    
+                    <div class="filter-group">
+                        <label for="availability">Disponibilité</label>
+                        <select id="availability" name="availability" onchange="this.form.submit()">
+                            <option value="" <?= $availability === '' ? 'selected' : '' ?>>Tous</option>
+                            <option value="1" <?= $availability === '1' ? 'selected' : '' ?>>Disponibles</option>
+                            <option value="0" <?= $availability === '0' ? 'selected' : '' ?>>Indisponibles</option>
+                        </select>
+                    </div>
+                    
+                    <div class="filter-group">
+                        <label for="sort">Trier par</label>
+                        <select id="sort" name="sort" onchange="this.form.submit()">
+                            <option value="titre" <?= $sort === 'titre' ? 'selected' : '' ?>>Titre (A-Z)</option>
+                            <option value="auteur" <?= $sort === 'auteur' ? 'selected' : '' ?>>Auteur (A-Z)</option>
+                            <option value="recent" <?= $sort === 'recent' ? 'selected' : '' ?>>Plus récents</option>
+                        </select>
+                    </div>
+                </div>
             </form>
-            
-            <div class="filters">
-                <div class="filter-group">
-                    <label for="category">Catégorie</label>
-                    <select id="category" name="category" onchange="this.form.submit()">
-                        <option value="">Toutes catégories</option>
-                        <?php
-                        $categories = $pdo->query("SELECT DISTINCT categorie FROM livres ORDER BY categorie");
-                        while ($cat = $categories->fetch()):
-                        ?>
-                        <option value="<?= htmlspecialchars($cat['categorie']) ?>" 
-                            <?= $category === $cat['categorie'] ? 'selected' : '' ?>>
-                            <?= htmlspecialchars($cat['categorie']) ?>
-                        </option>
-                        <?php endwhile; ?>
-                    </select>
-                </div>
-                
-                <div class="filter-group">
-                    <label for="availability">Disponibilité</label>
-                    <select id="availability" name="availability" onchange="this.form.submit()">
-                        <option value="">Tous</option>
-                        <option value="1" <?= $availability === 1 ? 'selected' : '' ?>>Disponibles</option>
-                        <option value="0" <?= $availability === 0 ? 'selected' : '' ?>>Indisponibles</option>
-                    </select>
-                </div>
-                
-                <div class="filter-group">
-                    <label for="sort">Trier par</label>
-                    <select id="sort" name="sort" onchange="this.form.submit()">
-                        <option value="titre" <?= $sort === 'titre' ? 'selected' : '' ?>>Titre (A-Z)</option>
-                        <option value="auteur" <?= $sort === 'auteur' ? 'selected' : '' ?>>Auteur (A-Z)</option>
-                        <option value="recent" <?= $sort === 'recent' ? 'selected' : '' ?>>Plus récents</option>
-                    </select>
-                </div>
-            </div>
         </div>
 
         <div class="container">
             <div class="catalogue">
                 <?php
-                // Construction de la requête
-                $sql = "SELECT * FROM livres WHERE 1=1";
-                $params = [];
-                
-                if (!empty($search)) {
-                    $sql .= " AND (titre LIKE :search OR auteur LIKE :search OR isbn LIKE :search)";
-                    $params[':search'] = "%$search%";
-                }
-                
-                if (!empty($category)) {
-                    $sql .= " AND categorie = :category";
-                    $params[':category'] = $category;
-                }
-                
-                if ($availability !== null) {
-                    $sql .= " AND disponible = :disponible";
-                    $params[':disponible'] = $availability;
-                }
-                
-                $sql .= " ORDER BY $sortOrder";
-                
                 try {
                     $stmt = $pdo->prepare($sql);
                     $stmt->execute($params);
                     
                     if ($stmt->rowCount() > 0) {
                         while ($book = $stmt->fetch()):
-                            $cover = !empty($book['cover']) ? $book['cover'] : 
-                                    'https://via.placeholder.com/150x200?text='.urlencode($book['titre']);
                 ?>
                             <div class="book-card">
                                 <div class="book-cover">
-                                    <img src="<?= htmlspecialchars($cover) ?>" alt="<?= htmlspecialchars($book['titre']) ?>">
+                                    <?php if(!empty($book['cover']) && filter_var($book['cover'], FILTER_VALIDATE_URL)): ?>
+                                        <img src="<?= htmlspecialchars($book['cover']) ?>" alt="<?= htmlspecialchars($book['titre']) ?>">
+                                    <?php else: ?>
+                                        <i class="fas fa-book placeholder-icon"></i>
+                                        <div class="placeholder-text"><?= htmlspecialchars(substr($book['titre'], 0, 30)) ?></div>
+                                    <?php endif; ?>
                                 </div>
                                 <div class="book-info">
                                     <h3 class="book-title"><?= htmlspecialchars($book['titre']) ?></h3>
@@ -565,26 +827,46 @@ $sortOrder = $sortOptions[$sort] ?? $sortOptions['titre'];
         </div>
     </main>
 
-    <footer>
+    <footer id="contact">
         <div class="footer-content">
             <div class="footer-section">
                 <h3 class="footer-title">Bibliothèque Universitaire</h3>
                 <p>Votre portail vers la connaissance et la découverte</p>
-                <address>
-                    <p><i class="fas fa-map-marker-alt"></i> 123 Avenue de l'Université</p>
+                <div class="contact-info">
+                    <p><i class="fas fa-map-marker-alt"></i> 123 Avenue de l'Université, 75000 Paris</p>
                     <p><i class="fas fa-phone"></i> +33 1 23 45 67 89</p>
                     <p><i class="fas fa-envelope"></i> contact@biblio-univ.fr</p>
-                </address>
+                    <p><i class="fas fa-clock"></i> Lundi-Vendredi: 9h-19h | Samedi: 10h-17h</p>
+                </div>
             </div>
             
             <div class="footer-section">
-                <h3 class="footer-title">Liens rapides</h3>
+                <h3 class="footer-title">Navigation</h3>
                 <ul class="footer-links">
-                    <li><a href="#">Catalogue en ligne</a></li>
-                    <li><a href="#">Horaires d'ouverture</a></li>
-                    <li><a href="#">Demande de document</a></li>
-                    <li><a href="#">Prêt entre bibliothèques</a></li>
+                    <li><a href="#" onclick="return scrollToTop()">Accueil</a></li>
+                    <li><a href="#catalogue">Catalogue</a></li>
+                    <li><a href="#contact">Contact</a></li>
+                    <?php if ($isLoggedIn): ?>
+                        <li><a href="reservations.php">Mes réservations</a></li>
+                    <?php endif; ?>
                 </ul>
+            </div>
+
+            <div class="footer-section">
+                <h3 class="footer-title">Réseaux sociaux</h3>
+                <div class="social-links">
+                    <a href="#" class="social-icon"><i class="fab fa-facebook-f"></i></a>
+                    <a href="#" class="social-icon"><i class="fab fa-twitter"></i></a>
+                    <a href="#" class="social-icon"><i class="fab fa-instagram"></i></a>
+                    <a href="#" class="social-icon"><i class="fab fa-linkedin-in"></i></a>
+                </div>
+                <div class="newsletter" style="margin-top: 1rem;">
+                    <p>Abonnez-vous à notre newsletter</p>
+                    <form>
+                        <input type="email" placeholder="Votre email" style="padding: 0.5rem; width: 100%; margin-bottom: 0.5rem;">
+                        <button type="submit" style="padding: 0.5rem 1rem; background: var(--primary-color); color: white; border: none; border-radius: 4px;">S'abonner</button>
+                    </form>
+                </div>
             </div>
         </div>
         
@@ -594,44 +876,64 @@ $sortOrder = $sortOptions[$sort] ?? $sortOptions['titre'];
     </footer>
 
     <script>
-        // Fonction de réservation
+        function scrollToTop() {
+            window.scrollTo({
+                top: 0,
+                behavior: 'smooth'
+            });
+            return false;
+        }
+
         function reserveBook(button) {
             const bookId = button.getAttribute('data-book-id');
-            const bookTitle = button.closest('.book-card').querySelector('.book-title').textContent;
+            const bookCard = button.closest('.book-card');
+            const bookTitle = bookCard.querySelector('.book-title').textContent;
             
             if (confirm(`Voulez-vous réserver le livre "${bookTitle}" ?`)) {
                 button.disabled = true;
                 button.textContent = 'En cours...';
                 
-                // Envoi AJAX
-                fetch('reserver.php', {
+                // Créer un formulaire dynamique pour envoyer les données
+                const formData = new FormData();
+                formData.append('book_id', bookId);
+                formData.append('reserver', 'true');
+                
+                fetch(window.location.href, {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded',
-                    },
-                    body: `book_id=${bookId}`
+                    body: formData
                 })
                 .then(response => response.json())
                 .then(data => {
                     if (data.success) {
                         button.textContent = 'Réservé';
-                        button.closest('.book-availability').querySelector('span').textContent = 'Indisponible';
-                        button.closest('.book-availability').querySelector('span').className = 'unavailable';
+                        const availabilitySpan = bookCard.querySelector('.book-availability span');
+                        availabilitySpan.textContent = 'Indisponible';
+                        availabilitySpan.className = 'unavailable';
                         alert(data.message);
                     } else {
-                        button.disabled = false;
-                        button.textContent = 'Réserver';
-                        alert('Erreur: ' + data.message);
+                        throw new Error(data.message || 'Erreur inconnue');
                     }
                 })
                 .catch(error => {
                     console.error('Error:', error);
                     button.disabled = false;
                     button.textContent = 'Réserver';
-                    alert('Erreur lors de la réservation');
+                    alert('Erreur lors de la réservation: ' + error.message);
                 });
             }
         }
+
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function(e) {
+                e.preventDefault();
+                const target = document.querySelector(this.getAttribute('href'));
+                if (target) {
+                    target.scrollIntoView({
+                        behavior: 'smooth'
+                    });
+                }
+            });
+        });
     </script>
 </body>
 </html>

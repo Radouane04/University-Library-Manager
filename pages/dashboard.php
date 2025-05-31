@@ -11,7 +11,7 @@ $stats = $pdo->query("
         (SELECT COUNT(*) FROM etudiants) as total_etudiants,
         (SELECT COUNT(*) FROM emprunts WHERE date_retour IS NULL) as emprunts_actifs,
         (SELECT COUNT(*) FROM emprunts WHERE date_retour IS NOT NULL) as emprunts_termines,
-        (SELECT COUNT(*) FROM reservations WHERE statut = 'en_attente') as reservations_attente,
+        (SELECT COUNT(*) FROM reservations ) as reservations_attente,
         (SELECT SUM(penalite) FROM emprunts WHERE penalite > 0) as total_penalites
 ")->fetch();
 
@@ -34,7 +34,7 @@ include '../includes/header.php';
 
 <div class="row">
     <div class="col-md-3">
-        <div class="stat-card bg-primary">
+        <div class="stat-card bg-secondary ">
             <h3>Livres</h3>
             <p><?= $stats['total_livres'] ?></p>
         </div>

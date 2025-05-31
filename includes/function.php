@@ -95,30 +95,3 @@ function formatDate($date, $format = 'd/m/Y') {
 /**
  * Vérifie si un ISBN est valide
  */
-function isValidISBN($isbn) {
-    $isbn = str_replace(['-', ' '], '', $isbn);
-    
-    // ISBN-10
-    if (strlen($isbn) == 10) {
-        $sum = 0;
-        for ($i = 0; $i < 9; $i++) {
-            $sum += (int)$isbn[$i] * (10 - $i);
-        }
-        $check = (11 - ($sum % 11)) % 11;
-        $last = strtoupper($isbn[9]) == 'X' ? 10 : (int)$isbn[9];
-        return $check == $last;
-    }
-    
-    // ISBN-13
-    if (strlen($isbn) == 13) {
-        $sum = 0;
-        for ($i = 0; $i < 12; $i++) {
-            $sum += (int)$isbn[$i] * ($i % 2 == 0 ? 1 : 3);
-        }
-        $check = (10 - ($sum % 10)) % 10;
-        return $check == (int)$isbn[12];
-    }
-    
-    return false;
-}
-?>

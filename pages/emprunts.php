@@ -12,6 +12,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         
         $pdo->beginTransaction();
         try {
+            // Vérifier que le livre est bien disponible
+            $stmt = $pdo->prepare("SELECT disponible FROM livres WHERE id = ?");
+            $stmt->execute([$_POST['livre_id']]);
+            $livre = $stmt->fetch();
+            
+            if (!$livre || !$livre['disponible']) {
+                throw new Exception("Ce livre n'est pas disponible pour l'emprunt");
+            }
+
             // Créer l'emprunt
             $stmt = $pdo->prepare("INSERT INTO emprunts 
                                   (livre_id, etudiant_id, agent_id, date_retour_prevue) 
@@ -49,7 +58,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             
             if (strtotime($emprunt['date_retour_prevue']) < time()) {
                 $jours_retard = floor((time() - strtotime($emprunt['date_retour_prevue'])) / (60 * 60 * 24));
-                $penalite = $jours_retard * 1.5; // 1.5€ par jour de retard
+                $penalite = $jours_retard * 15; // 15 DHS par jour de retard
                 
                 $stmt = $pdo->prepare("UPDATE emprunts SET penalite = ? WHERE id = ?");
                 $stmt->execute([$penalite, $_POST['emprunt_id']]);
@@ -60,7 +69,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $stmt->execute([$emprunt['livre_id']]);
             
             $pdo->commit();
-            $_SESSION['message'] = "Retour enregistré" . ($penalite > 0 ? " (Pénalité: $penalite €)" : "");
+            $_SESSION['message'] = "Retour enregistré" . ($penalite > 0 ? " (Pénalité: $penalite DHS)" : "");
         } catch (Exception $e) {
             $pdo->rollBack();
             $_SESSION['error'] = "Erreur lors du retour: " . $e->getMessage();
@@ -84,8 +93,18 @@ $emprunts = $pdo->query("
     ORDER BY e.date_retour IS NULL DESC, e.date_emprunt DESC
 ")->fetchAll();
 
-// Récupérer les livres disponibles
-$livres_disponibles = $pdo->query("SELECT * FROM livres WHERE disponible = TRUE")->fetchAll();
+// Récupérer les livres vraiment disponibles (non empruntés)
+$livres_disponibles = $pdo->query("
+    SELECT l.* 
+    FROM livres l
+    WHERE l.disponible = TRUE 
+    AND NOT EXISTS (
+        SELECT 1 
+        FROM emprunts e 
+        WHERE e.livre_id = l.id 
+        AND e.date_retour IS NULL
+    )
+")->fetchAll();
 
 // Récupérer les étudiants
 $etudiants = $pdo->query("SELECT * FROM etudiants ORDER BY nom")->fetchAll();
@@ -195,7 +214,7 @@ include '../includes/header.php';
                         <td><?= date('d/m/Y', strtotime($emprunt['date_emprunt'])) ?></td>
                         <td><?= date('d/m/Y', strtotime($emprunt['date_retour_prevue'])) ?></td>
                         <td><?= $emprunt['date_retour'] ? date('d/m/Y', strtotime($emprunt['date_retour'])) : '-' ?></td>
-                        <td><?= $emprunt['penalite'] ? $emprunt['penalite'] . ' €' : '-' ?></td>
+                        <td><?= $emprunt['penalite'] ? $emprunt['penalite'] . ' DHS' : '-' ?></td>
                         <td>
                             <?php if ($emprunt['date_retour']): ?>
                                 <span class="badge badge-success">Retourné</span>

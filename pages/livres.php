@@ -8,32 +8,52 @@ checkAuth();
 // Gestion des actions
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (isset($_POST['add_livre'])) {
-        if (!isValidISBN($_POST['isbn'])) {
+        // Vérification si l'ISBN est vide
+        if (empty($_POST['isbn'])) {
             $_SESSION['error'] = "ISBN invalide";
         } else {
-            $stmt = $pdo->prepare("INSERT INTO livres (isbn, titre, auteur, categorie) VALUES (?, ?, ?, ?)");
-            $stmt->execute([
-                $_POST['isbn'],
-                $_POST['titre'],
-                $_POST['auteur'],
-                $_POST['categorie']
-            ]);
-            $_SESSION['message'] = "Livre ajouté avec succès";
+            // Vérifier si l'ISBN existe déjà
+            $checkStmt = $pdo->prepare("SELECT id FROM livres WHERE isbn = ?");
+            $checkStmt->execute([$_POST['isbn']]);
+            $existingBook = $checkStmt->fetch();
+            
+            if ($existingBook) {
+                $_SESSION['error'] = "Un livre avec cet ISBN existe déjà";
+            } else {
+                $stmt = $pdo->prepare("INSERT INTO livres (isbn, titre, auteur, categorie) VALUES (?, ?, ?, ?)");
+                $stmt->execute([
+                    $_POST['isbn'],
+                    $_POST['titre'],
+                    $_POST['auteur'],
+                    $_POST['categorie']
+                ]);
+                $_SESSION['message'] = "Livre ajouté avec succès";
+            }
         }
         redirect('livres.php');
     } elseif (isset($_POST['update_livre'])) {
-        if (!isValidISBN($_POST['isbn'])) {
+        // Vérification si l'ISBN est vide
+        if (empty($_POST['isbn'])) {
             $_SESSION['error'] = "ISBN invalide";
         } else {
-            $stmt = $pdo->prepare("UPDATE livres SET isbn = ?, titre = ?, auteur = ?, categorie = ? WHERE id = ?");
-            $stmt->execute([
-                $_POST['isbn'],
-                $_POST['titre'],
-                $_POST['auteur'],
-                $_POST['categorie'],
-                $_POST['id']
-            ]);
-            $_SESSION['message'] = "Livre mis à jour avec succès";
+            // Vérifier si l'ISBN existe déjà pour un autre livre
+            $checkStmt = $pdo->prepare("SELECT id FROM livres WHERE isbn = ? AND id != ?");
+            $checkStmt->execute([$_POST['isbn'], $_POST['id']]);
+            $existingBook = $checkStmt->fetch();
+            
+            if ($existingBook) {
+                $_SESSION['error'] = "Un autre livre avec cet ISBN existe déjà";
+            } else {
+                $stmt = $pdo->prepare("UPDATE livres SET isbn = ?, titre = ?, auteur = ?, categorie = ? WHERE id = ?");
+                $stmt->execute([
+                    $_POST['isbn'],
+                    $_POST['titre'],
+                    $_POST['auteur'],
+                    $_POST['categorie'],
+                    $_POST['id']
+                ]);
+                $_SESSION['message'] = "Livre mis à jour avec succès";
+            }
         }
         redirect('livres.php');
     }

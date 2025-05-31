@@ -100,6 +100,7 @@
             display: flex;
             align-items: center;
             gap: 10px;
+            margin-left: 120px; /* Décalage modéré vers la droite */
         }
 
         .logo i {
@@ -112,9 +113,30 @@
             gap: 15px;
         }
 
+        .user-greeting {
+            margin-right: 20px; /* Espace avant le bouton de déconnexion */
+        }
+
         .logout-btn {
+            background-color: #e74c3c;
             color: white;
-            font-size: 18px;
+            border: none;
+            padding: 8px 15px;
+            border-radius: 4px;
+            font-size: 14px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            transition: background-color 0.3s;
+        }
+
+        .logout-btn:hover {
+            background-color: #c0392b;
+        }
+
+        .logout-btn i {
+            font-size: 16px;
         }
     </style>
 </head>
@@ -141,15 +163,16 @@
             <div class="logo">
                 <i class="fas fa-book-open"></i>
                 <a href="accueil.php" class="logo-link" style="text-decoration: none;">
-                    <h1 style="color: white; margin: 0;">Bibliothèque Universitaire</h1>
+                    <h1 style="color: white; margin: 0; font-size: 1.5rem;">Bibliothèque Universitaire</h1>
                 </a>
             </div>
             <?php if (isLoggedIn()): ?>
                 <div class="user-info">
-                    <span>Bonjour, <?= htmlspecialchars($_SESSION['user']['nom']) ?></span>
-                    <a href="logout.php" class="logout-btn" title="Se déconnecter">
+                    <span class="user-greeting">Bonjour, <?= htmlspecialchars($_SESSION['user']['nom']) ?></span>
+                    <button class="logout-btn" onclick="window.location.href='logout.php'" title="Se déconnecter">
                         <i class="fas fa-sign-out-alt"></i>
-                    </a>
+                        Déconnexion
+                    </button>
                 </div>
             <?php endif; ?>
         </div>

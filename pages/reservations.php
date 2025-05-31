@@ -6,20 +6,32 @@ checkAuth();
 
 // Gestion des réservations
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (isset($_POST['add_reservation'])) {
-        $stmt = $pdo->prepare("INSERT INTO reservations (livre_id, etudiant_id) VALUES (?, ?)");
-        $stmt->execute([
-            $_POST['livre_id'],
-            $_POST['etudiant_id']
-        ]);
-        $_SESSION['message'] = "Réservation enregistrée";
+    if (isset($_POST['annuler_reservation'])) {
+        // Annuler la réservation et rendre le livre disponible
+        $pdo->beginTransaction();
+        try {
+            // Récupérer l'ID du livre avant annulation
+            $stmt = $pdo->prepare("SELECT livre_id FROM reservations WHERE id = ?");
+            $stmt->execute([$_POST['reservation_id']]);
+            $livre_id = $stmt->fetchColumn();
+            
+            // Supprimer la réservation
+            $stmt = $pdo->prepare("DELETE FROM reservations WHERE id = ?");
+            $stmt->execute([$_POST['reservation_id']]);
+            
+            // Rendre le livre disponible
+            $stmt = $pdo->prepare("UPDATE livres SET disponible = TRUE WHERE id = ?");
+            $stmt->execute([$livre_id]);
+            
+            $pdo->commit();
+            $_SESSION['message'] = "Réservation annulée et livre rendu disponible";
+        } catch (Exception $e) {
+            $pdo->rollBack();
+            $_SESSION['error'] = "Erreur: " . $e->getMessage();
+        }
         redirect('reservations.php');
-    } elseif (isset($_POST['annuler_reservation'])) {
-        $stmt = $pdo->prepare("UPDATE reservations SET statut = 'annulee' WHERE id = ?");
-        $stmt->execute([$_POST['reservation_id']]);
-        $_SESSION['message'] = "Réservation annulée";
-        redirect('reservations.php');
-    } elseif (isset($_POST['valider_reservation'])) {
+    } elseif (isset($_POST['emprunter'])) {
+        // Créer un emprunt à partir de la réservation
         $pdo->beginTransaction();
         try {
             // Récupérer la réservation
@@ -37,16 +49,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $date_retour_prevue
             ]);
             
-            // Mettre à jour la disponibilité du livre
-            $stmt = $pdo->prepare("UPDATE livres SET disponible = FALSE WHERE id = ?");
-            $stmt->execute([$reservation['livre_id']]);
-            
-            // Mettre à jour le statut de la réservation
-            $stmt = $pdo->prepare("UPDATE reservations SET statut = 'completee' WHERE id = ?");
+            // Supprimer la réservation
+            $stmt = $pdo->prepare("DELETE FROM reservations WHERE id = ?");
             $stmt->execute([$_POST['reservation_id']]);
             
             $pdo->commit();
-            $_SESSION['message'] = "Réservation validée et emprunt créé";
+            $_SESSION['message'] = "Emprunt créé avec succès";
         } catch (Exception $e) {
             $pdo->rollBack();
             $_SESSION['error'] = "Erreur: " . $e->getMessage();
@@ -55,7 +63,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// Récupérer les réservations
+// Récupérer toutes les réservations
 $reservations = $pdo->query("
     SELECT r.*, 
            l.titre as livre_titre, 
@@ -65,23 +73,8 @@ $reservations = $pdo->query("
     FROM reservations r
     JOIN livres l ON r.livre_id = l.id
     JOIN etudiants et ON r.etudiant_id = et.id
-    WHERE r.statut = 'en_attente'
-    ORDER BY r.date_reservation
+    ORDER BY r.date_reservation DESC
 ")->fetchAll();
-
-// Récupérer les livres non disponibles
-$livres_indisponibles = $pdo->query("
-    SELECT l.* 
-    FROM livres l
-    WHERE l.disponible = FALSE
-    AND NOT EXISTS (
-        SELECT 1 FROM emprunts e 
-        WHERE e.livre_id = l.id AND e.date_retour IS NULL
-    )
-")->fetchAll();
-
-// Récupérer les étudiants
-$etudiants = $pdo->query("SELECT * FROM etudiants ORDER BY nom")->fetchAll();
 
 include '../includes/header.php';
 ?>
@@ -102,48 +95,9 @@ include '../includes/header.php';
 
 <h2>Gestion des Réservations</h2>
 
-<div class="row">
-    <div class="col-md-6">
-        <div class="card mb-4">
-            <div class="card-header">
-                <h3>Nouvelle Réservation</h3>
-            </div>
-            <div class="card-body">
-                <form method="POST">
-                    <div class="form-group">
-                        <label>Livre (indisponible)</label>
-                        <select name="livre_id" class="form-control" required>
-                            <option value="">Sélectionner un livre</option>
-                            <?php foreach ($livres_indisponibles as $livre): ?>
-                            <option value="<?= $livre['id'] ?>">
-                                <?= htmlspecialchars($livre['titre']) ?> (<?= $livre['isbn'] ?>)
-                            </option>
-                            <?php endforeach; ?>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>Étudiant</label>
-                        <select name="etudiant_id" class="form-control" required>
-                            <option value="">Sélectionner un étudiant</option>
-                            <?php foreach ($etudiants as $etudiant): ?>
-                            <option value="<?= $etudiant['id'] ?>">
-                                <?= htmlspecialchars($etudiant['nom']) ?> (<?= $etudiant['matricule'] ?>)
-                            </option>
-                            <?php endforeach; ?>
-                        </select>
-                    </div>
-                    <button type="submit" name="add_reservation" class="btn btn-primary">
-                        Enregistrer la réservation
-                    </button>
-                </form>
-            </div>
-        </div>
-    </div>
-</div>
-
 <div class="card">
     <div class="card-header">
-        <h3>Réservations en attente</h3>
+        <h3>Liste des Réservations</h3>
     </div>
     <div class="card-body">
         <div class="table-responsive">
@@ -165,8 +119,8 @@ include '../includes/header.php';
                         <td>
                             <form method="POST" style="display:inline;">
                                 <input type="hidden" name="reservation_id" value="<?= $reservation['id'] ?>">
-                                <button type="submit" name="valider_reservation" class="btn btn-sm btn-success">
-                                    <i class="fas fa-check"></i> Valider
+                                <button type="submit" name="emprunter" class="btn btn-sm btn-success">
+                                    <i class="fas fa-book"></i> Emprunter
                                 </button>
                             </form>
                             <form method="POST" style="display:inline;">
